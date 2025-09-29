@@ -17,7 +17,12 @@ const {
 } = process.env;
 
 const LINE_RE = new RegExp(LINE_REGEX);
-const store = getStore({ name: "bus-state" });
+
+const store = getStore({
+  name: "bus-state",
+  siteID: process.env.BLOBS_SITE_ID,
+  token:  process.env.BLOBS_TOKEN
+});
 
 function okNum(n){ const v=Number(n); return Number.isFinite(v)?v:null; }
 function distM(lat1, lon1, lat2, lon2){
