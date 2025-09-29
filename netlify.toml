@@ -1,0 +1,7 @@
+﻿[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["@netlify/blobs"]
+
+[[scheduled.functions]]
+  name = "poll-bus"
+  schedule = "*/1 * * * *"   # corre cada 1 min

@@ -1,0 +1,466 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live Bus Viewer – A108 (Bellavista Mz I Lt 5)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin></script>
+  <style>
+    :root{--bg:#0b1220;--panel:#111a2b;--muted:#9fb0c3;--text:#e6eef7;--ok:#35d49a;--warn:#ffc857;--err:#ff6b6b}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto}
+    .app{display:grid;grid-template-columns:360px 1fr;height:100%}
+    .side{background:var(--panel);border-right:1px solid #1f2a44;overflow:auto}
+    .side header{padding:16px 16px 8px;border-bottom:1px solid #1f2a44}
+    h1{font-size:18px;margin:0 0 6px}
+    .muted{color:var(--muted)}
+    .group{padding:12px 16px;border-bottom:1px dashed #22314f}
+    label{display:block;font-weight:600;margin:10px 0 6px}
+    input,textarea{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #23365c;background:#0e1626;color:var(--text)}
+    textarea{min-height:120px;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+    button{appearance:none;border:0;border-radius:12px;padding:10px 12px;background:#183055;color:#e6eef7;cursor:pointer;font-weight:700}
+    button.primary{background:linear-gradient(135deg,#1a75ff,#00c2ff)}
+    button.ghost{background:#0f1b2e}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#0f213a;border:1px solid #20324f}
+    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+    #map{height:100%}
+    .legend{position:absolute;z-index:1000;right:10px;top:10px;background:rgba(17,26,43,.9);border:1px solid #1f2a44;border-radius:12px;padding:10px}
+    .tbl{width:100%;border-collapse:collapse}
+    .tbl th,.tbl td{padding:8px;border-bottom:1px solid #1f2a44}
+    .tbl th{text-align:left;color:#c4d2e2;font-size:12px}
+    .tbl td{font-size:12px;color:#dce7f3}
+    pre{white-space:pre-wrap;background:#0e1626;border:1px solid #23365c;border-radius:10px;padding:10px;color:#dce7f3}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <header>
+        <h1>Live Bus Viewer <span class="pill">A108</span></h1>
+        <div class="muted">Bellavista Mz I Lt 5 → forecast/fromPoint · Auth Basic</div>
+      </header>
+
+      <div class="group">
+        <label>Endpoint (A108 desde Bellavista Mz I Lt 5)</label>
+        <input id="endpoint" value="https://zn5.m2mcontrol.com.br/api/forecast/lines/load/forecast/lines/fromPoint/242089/1343" />
+        <div class="muted">pointId numérico <code>242089</code> (se normaliza automáticamente si cambias al _id hex).</div>
+        <label for="lineFilter">Filtro de línea</label>
+        <input id="lineFilter" value="^A108$" />
+        <div class="row">
+          <div>
+            <label for="interval">Intervalo (s)</label>
+            <input id="interval" type="number" min="3" step="1" value="7" />
+          </div>
+          <div>
+            <label for="timeout">Timeout (s)</label>
+            <input id="timeout" type="number" min="3" step="1" value="10" />
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="row">
+          <div>
+            <label for="user">Usuario</label>
+            <input id="user" value="mobile.m2m" />
+          </div>
+          <div>
+            <label for="pass">Contraseña</label>
+            <input id="pass" value="m2m" type="password" />
+          </div>
+        </div>
+        <div class="muted">Backend: <code>https://zn5.m2mcontrol.com.br/api</code></div>
+      </div>
+
+      <div class="group">
+        <label for="transform">Transformador (JS → esquema estándar)</label>
+        <textarea id="transform" spellcheck="false">/* Debe retornar Array&lt;{id, route, lat, lon, bearing, speed, updated_at}&gt; */
+return (json => {
+  // Caso NUEVO (array con latLng)
+  if (Array.isArray(json) && json.length && json[0].latLng && (json[0].latLng.lat !== undefined) && (json[0].latLng.lng !== undefined)){
+    return json.map(v => ({
+      id: String(v.codVehicle ?? v.idVeiculo ?? v.busServiceId ?? v.cod ?? '?'),
+      route: v.busServiceNumber ?? v.numero ?? v.line ?? v.route ?? null,
+      lat: Number(v.latLng.lat),
+      lon: Number(v.latLng.lng),
+      bearing: Number(v.heading ?? v.course ?? v.bearing ?? NaN),
+      speed: Number(v.speed ?? v.kmh ?? v.speedKmh ?? NaN),
+      updated_at: v.timestamp ?? v.gps_datetime ?? v.updated_at ?? null,
+    })).filter(x => Number.isFinite(x.lat) && Number.isFinite(x.lon));
+  }
+
+  // Lista directa con lat/lon
+  if (Array.isArray(json) && json.length && json[0].lat !== undefined) return json;
+
+  // Raíz {data:[...]}
+  if (json && Array.isArray(json.data)){
+    return json.data.map(v => ({
+      id: String(v.id ?? v.code ?? v.vehicleId ?? v.bus ?? '?'),
+      route: v.numero ?? v.line ?? v.route ?? v.name ?? v.nome ?? null,
+      lat: Number(v.lat ?? v.latitude ?? v.gps_latitude ?? v.LATITUDE),
+      lon: Number(v.lon ?? v.lng ?? v.longitude ?? v.gps_longitude ?? v.LONGITUDE),
+      bearing: Number(v.bearing ?? v.heading ?? v.course ?? v.rumbo ?? v.COURSE ?? NaN),
+      speed: Number(v.speed ?? v.kmh ?? v.speedKmh ?? NaN),
+      updated_at: v.timestamp ?? v.updated_at ?? v.gps_datetime ?? v.datetime ?? v.DATAHORA ?? null,
+    })).filter(x => Number.isFinite(x.lat) && Number.isFinite(x.lon));
+  }
+
+  // Forecast por punto → líneas con vehículos
+  if (json && (json.lines || json.forecast || json.previsoes)){
+    const items = [];
+    const arr = (json.lines ?? json.forecast ?? json.previsoes ?? []);
+    (Array.isArray(arr) ? arr : [arr]).forEach(L => {
+      const route = L.numero ?? L.line ?? L.route ?? L.name ?? L.nome ?? null;
+      const vehs = L.vehicles ?? L.veiculos ?? L.buses ?? [];
+      (Array.isArray(vehs) ? vehs : [vehs]).forEach(v => {
+        const lat = Number(v.lat ?? v.latitude ?? v.gps_latitude);
+        const lon = Number(v.lon ?? v.lng ?? v.longitude ?? v.gps_longitude);
+        if (Number.isFinite(lat) && Number.isFinite(lon)){
+          items.push({
+            id: String(v.id ?? v.code ?? v.vehicleId ?? v.bus ?? '?'),
+            route, lat, lon,
+            bearing: Number(v.bearing ?? v.heading ?? v.course ?? NaN),
+            speed: Number(v.speed ?? v.kmh ?? v.speedKmh ?? NaN),
+            updated_at: v.timestamp ?? v.gps_datetime ?? v.updated_at ?? null,
+          });
+        }
+      });
+    });
+    return items;
+  }
+  return [];
+})(json);
+</textarea>
+        <div class="btns">
+          <button class="ghost" id="btnMock">Mock</button>
+          <button class="ghost" id="btnRunTests">Probar transformador</button>
+          <button class="primary" id="btnStart">Iniciar</button>
+          <button id="btnStop" disabled>Detener</button>
+        </div>
+        <div class="pill" id="status">Idle</div>
+      </div>
+
+      <div class="group">
+        <table class="tbl" id="tbl">
+          <thead><tr><th>ID</th><th>Ruta</th><th>Vel.</th><th>Últ. actualización</th></tr></thead>
+        </table>
+      </div>
+
+      <div class="group">
+        <label>Resultados de pruebas</label>
+        <pre id="testout">(sin pruebas)</pre>
+      </div>
+    </aside>
+
+    <main>
+      <div id="map"></div>
+      <div class="legend"><b>Marcadores:</b> bus = naranja; tú (rojo) con radio 3 km (borde azul); morado = punto fijo.</div>
+    </main>
+  </div>
+
+<script>
+(function(){
+  const $ = s => document.querySelector(s);
+  const el = {
+    endpoint: $('#endpoint'), lineFilter: $('#lineFilter'), interval: $('#interval'), timeout: $('#timeout'),
+    user: $('#user'), pass: $('#pass'), transform: $('#transform'), status: $('#status'),
+    btnStart: $('#btnStart'), btnStop: $('#btnStop'), btnMock: $('#btnMock'), btnRunTests: $('#btnRunTests'),
+    tbody: document.querySelector('#tbl tbody'), testout: $('#testout')
+  };
+
+  if (!el.tbody){
+    const tb = document.createElement('tbody');
+    document.querySelector('#tbl').appendChild(tb);
+    el.tbody = tb;
+  }
+
+  // === MAPA ===
+  const map = L.map('map').setView([10.372842209007372, -75.50413548946382], 14);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
+
+  // Panes para controlar orden de dibujo
+  map.createPane('busPane');  map.getPane('busPane').style.zIndex = 610;
+  map.createPane('userPane'); map.getPane('userPane').style.zIndex = 650;
+
+  // Capas
+  const busLayer = L.layerGroup().addTo(map);
+  const userLayer = L.layerGroup().addTo(map);
+
+  // === TU UBICACIÓN (FIJA + VIVA) ===
+
+  // Punto fijo (del link nuevo)
+  const FIXED_PT = L.latLng(10.3763016, -75.4999534);
+  L.marker(FIXED_PT, {
+    icon: L.divIcon({
+      className:'fixed-marker',
+      html:`<div style="width:18px;height:18px;border-radius:50%;
+             background:#a573ff;box-shadow:0 0 0 2px #0b1220,
+             0 0 10px rgba(165,115,255,.85);"></div>`
+    }),
+    pane: 'userPane',
+    zIndexOffset: 900
+  }).addTo(userLayer).bindPopup('<b>Punto fijo</b><br>Campestre');
+
+  // Mi ubicación en vivo (dibujamos círculo de 3 km para referencia visual)
+  let myMarker = null, myCircle3km = null, myLatLng = null;
+  const MY_RADIUS_M = 1500; // 3 km (visual)
+
+  function upsertLiveLocation(latlng){
+    myLatLng = latlng;
+    if (!myMarker){
+      myMarker = L.marker(myLatLng, {
+        icon: L.divIcon({
+          className:'me-marker',
+          html:`<div style="width:18px;height:18px;border-radius:50%;
+                 background:#ff3333; /* rojo */
+                 box-shadow:0 0 0 2px #0b1220, 0 0 10px rgba(255,51,51,.8);"></div>`
+        }),
+        pane: 'userPane',
+        zIndexOffset: 1000
+      }).addTo(userLayer).bindPopup('<b>Estás aquí (en vivo)</b>');
+
+      myCircle3km = L.circle(myLatLng, {
+        radius: MY_RADIUS_M,
+        color:'#0066ff',     // borde azul
+        fillColor:'#ff3333', // relleno rojo claro
+        fillOpacity:0.08,
+        weight:2,
+        pane:'userPane'
+      }).addTo(userLayer);
+    } else {
+      myMarker.setLatLng(myLatLng);
+      myCircle3km.setLatLng(myLatLng);
+    }
+  }
+
+  function enableMyLocation(){
+    // inicia con el punto fijo hasta que el navegador dé GPS
+    upsertLiveLocation(FIXED_PT);
+
+    // luego GPS del navegador, si hay permiso
+    if (!('geolocation' in navigator)) return;
+    const onPos = pos => upsertLiveLocation(L.latLng(pos.coords.latitude, pos.coords.longitude));
+    const onErr = err => console.warn('Geoloc error:', err?.message || err);
+    navigator.geolocation.getCurrentPosition(onPos, onErr,
+        { enableHighAccuracy:true, timeout:8000, maximumAge:0 });
+    navigator.geolocation.watchPosition(onPos, onErr,
+        { enableHighAccuracy:true, timeout:15000, maximumAge:5000 });
+  }
+
+  // === TELEGRAM (sin backend) ============================
+  // >>> Reemplaza con tus valores reales
+  const TG_TOKEN = '8228643510:AAHgYPAp1OV1JxPGC5TWE0z-5c4kHwDzELw';
+  const TG_CHAT  = '1520082750';
+  const TG_URL   = `https://api.telegram.org/bot${TG_TOKEN}/sendMessage`;
+
+  // Estado notificaciones
+  const seenPrev = new Set();                 // ids vistos en el último poll
+  const lastDepartMsgPerBus = new Map();      // cooldown por bus para "salió"
+  const PER_BUS_COOLDOWN_MS = 2 * 60 * 1000;  // 2 min
+
+  const inFence = new Map();                  // id -> bool (dentro de 1km de mi ubicación)
+  const lastNearMsgPerBus = new Map();        // cooldown por bus para "cerca"
+  const NEAR_COOLDOWN_MS = 10 * 60 * 1000;    // 10 min
+  const GEOFENCE_R = 1000;                    // 1 km (lógica, NO el círculo visual)
+
+  // Disparo por GET usando image beacon (evita CORS)
+  function sendTG(text){
+    if (!TG_TOKEN || !TG_CHAT) { console.warn('Config TG faltante'); return; }
+    const url = TG_URL + '?chat_id=' + encodeURIComponent(TG_CHAT)
+                      + '&text=' + encodeURIComponent(text);
+    (new Image()).src = url;
+  }
+  // =======================================================
+
+  // === BUSES ===
+  const markerById = new Map();
+  const lastSeen = new Map(); // id -> timestamp (ms)
+  const STALE_MS = 90 * 1000;
+  let timer=null, lastFit=0, tick=0;
+
+  // Todos los buses en naranja
+  function colorFromBearing(_b){ return '#ff8800'; }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+  }
+  function setStatus(txt, cls){ el.status.textContent = txt; el.status.className = 'pill ' + (cls||''); }
+
+  function buildHeaders(){
+    const h={ 'Accept':'application/json' };
+    const u=el.user.value.trim(), p=el.pass.value;
+    if(u||p){ h['Authorization']='Basic '+btoa(u+":"+p); }
+    return h;
+  }
+
+  function compileTransformer(){
+    try { return new Function('json', el.transform.value); }
+    catch(e){ setStatus('Error en transformador: '+e.message,'err'); return ()=>[]; }
+  }
+
+  async function fetchJSON(url){
+    const ctrl = new AbortController();
+    const t = setTimeout(()=>ctrl.abort(), Math.max(3000,Number(el.timeout.value||10)*1000));
+    try {
+      const r = await fetch(url, { headers: buildHeaders(), signal: ctrl.signal, cache: 'no-store' });
+      const text = await r.text();
+      let payload = null;
+      try { payload = JSON.parse(text); } catch(_) { payload = { raw:text }; }
+      if(!r.ok){
+        const emsg = (payload && (payload.message||payload.error)) ? (payload.message||payload.error) : ('HTTP '+r.status);
+        const err = new Error(emsg);
+        err.payload = payload; err.status = r.status; throw err;
+      }
+      return payload;
+    } finally { clearTimeout(t); }
+  }
+
+  function normalizePointIdInUrl(u){
+    return u.replace('fromPoint/658dda9ea5ba2d1568a6baa5/','fromPoint/242089/');
+  }
+
+  // === POLL DE BUSES + eventos TG ===
+  async function pollOnce(){
+    const xf = compileTransformer();
+    const endpointRaw = el.endpoint.value.trim();
+    const endpoint = normalizePointIdInUrl(endpointRaw);
+    if (endpoint !== endpointRaw) el.endpoint.value = endpoint;
+
+    try {
+      setStatus('Consultando…','');
+      const raw = await fetchJSON(endpoint);
+      let items = [];
+      try { items = xf(raw) || []; } catch(e){ items = []; console.error('Transform error', e); }
+      const re = el.lineFilter.value.trim()? new RegExp(el.lineFilter.value.trim()): null;
+      if(re) items = items.filter(b => re.test(String(b.route||'')));
+
+      // --- Evento: "salió un bus" (nuevo id no visto en el poll anterior)
+      const seenNow = new Set(items.map(b => String(b.id)));
+      seenNow.forEach(id => {
+        if (!seenPrev.has(id)) {
+          const last = lastDepartMsgPerBus.get(id) || 0;
+          if (Date.now() - last > PER_BUS_COOLDOWN_MS) {
+            sendTG(`Ya salió el bus A108 (${id})`);
+            lastDepartMsgPerBus.set(id, Date.now());
+          }
+        }
+      });
+      // refresca ventana de vistos
+      seenPrev.clear(); seenNow.forEach(id => seenPrev.add(id));
+
+      // pintar
+      tick++;
+      el.tbody.innerHTML='';
+      const bounds=[];
+      items.forEach(b=>{
+        const key = String(b.id);
+        const icon = L.divIcon({ className:'bus-marker',
+          html:`<div style="width:16px;height:16px;border-radius:50%;background:#ff8800;box-shadow:0 0 0 2px #0b1220;"></div>` });
+        let m = markerById.get(key);
+        if(!m){
+          m = L.marker([b.lat,b.lon], {icon, pane:'busPane', zIndexOffset:0});
+          m.addTo(busLayer); markerById.set(key,m);
+        } else {
+          m.setLatLng([b.lat,b.lon]); m.setIcon(icon);
+        }
+        m.setOpacity(1);
+        m.__tick = tick;
+
+        lastSeen.set(key, Date.now());
+        m.bindPopup(`<div style="font:12px system-ui;color:#0b1220">
+          <b>ID:</b> ${escapeHtml(b.id)}<br>
+          <b>Ruta:</b> ${escapeHtml(b.route||'-')}<br>
+          <b>Vel.:</b> ${b.speed??'-'}<br>
+          <b>Brújula:</b> ${b.bearing??'-'}<br>
+          <b>Actualizado:</b> ${escapeHtml(b.updated_at||'-')}
+        </div>`);
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${escapeHtml(b.id)}</td><td>${escapeHtml(b.route||'-')}</td><td>${b.speed??'-'}</td><td>${escapeHtml(b.updated_at||'-')}</td>`;
+        el.tbody.appendChild(tr);
+
+        // --- Evento: bus entró a 1 km de MI ubicación (dinámica)
+        const center = myLatLng || FIXED_PT;
+        if (center){
+          const d = L.latLng(b.lat, b.lon).distanceTo(center);
+          const prevIn = inFence.get(b.id) === true;
+          const nowIn = d <= GEOFENCE_R;
+          if (!prevIn && nowIn) {
+            const last = lastNearMsgPerBus.get(b.id) || 0;
+            if (Date.now() - last > NEAR_COOLDOWN_MS) {
+              sendTG(`El bus A108 (${b.id}) está cerca de ti (≤1 km).`);
+              lastNearMsgPerBus.set(b.id, Date.now());
+            }
+          }
+          inFence.set(b.id, nowIn);
+        }
+
+        bounds.push(m.getLatLng());
+      });
+
+      // limpiar marcadores vencidos
+      markerById.forEach((m, key)=>{
+        if (m.__tick === tick) return;
+        const last = lastSeen.get(key) || 0;
+        const age = Date.now() - last;
+        if (age > STALE_MS){
+          busLayer.removeLayer(m);
+          markerById.delete(key);
+          lastSeen.delete(key);
+          inFence.delete(key); // limpia estado de geocerca
+        } else {
+          try{ m.setOpacity(0.4); }catch(_){ }
+        }
+      });
+
+      // Auto-encuadre (incluye vivo y fijo)
+      if (myLatLng) bounds.push(myLatLng);
+      if (FIXED_PT) bounds.push(FIXED_PT);
+      if(bounds.length && (Date.now()-lastFit>15000)){
+        map.fitBounds(L.latLngBounds(bounds).pad(0.2)); lastFit = Date.now();
+      }
+
+      setStatus(`OK · ${items.length} buses (vivos)`, 'ok');
+    } catch(err) {
+      console.error(err);
+      setStatus('Error: '+(err && err.message ? err.message : String(err)),'err');
+    }
+  }
+
+  function start(){ if(timer) return; pollOnce(); timer=setInterval(pollOnce, Math.max(3000, Number(el.interval.value||7)*1000)); el.btnStart.disabled=true; el.btnStop.disabled=false; }
+  function stop(){ if(timer){ clearInterval(timer); timer=null; } setStatus('Detenido','warn'); el.btnStart.disabled=false; el.btnStop.disabled=true; }
+  el.btnStart.addEventListener('click', start);
+  el.btnStop.addEventListener('click', stop);
+
+  // MOCK seguro
+  el.btnMock.addEventListener('click', function(){
+    const mock = { lines: [{ numero:'A108', vehicles:[
+      {id:'A108-01',lat:10.3760,lon:-75.4998,heading:12,speed:30,timestamp:new Date().toISOString()},
+      {id:'A108-02',lat:10.3820,lon:-75.5020,heading:192,speed:24,timestamp:new Date().toISOString()}
+    ] }] };
+    const dataUrl = 'data:application/json,' + encodeURIComponent(JSON.stringify(mock));
+    el.endpoint.value = dataUrl; setStatus('Mock listo','ok');
+  });
+
+  // TESTS
+  el.btnRunTests.addEventListener('click', function(){
+    const xf = compileTransformer(); const out=[];
+    function t(name, fn){ try{ fn(); out.push('✔ '+name);} catch(e){ out.push('✘ '+name+' → '+e.message);} }
+    t('Lista directa', function(){ const r=xf([{id:'x',route:'A108',lat:1,lon:2,bearing:0,speed:10,updated_at:'t'}]); if(!Array.isArray(r)||r.length!==1||r[0].lat!==1) throw new Error('falló'); });
+    t('Raíz data', function(){ const r=xf({data:[{id:'y',line:'A108',latitude:1.2,longitude:2.3,heading:90}]}); if(!r.length||r[0].lon!==2.3) throw new Error('lon'); });
+    t('Forecast/lines', function(){ const r=xf({lines:[{numero:'A108',vehicles:[{id:'z',lat:3.4,lon:4.5}]}]}); if(!r.length||r[0].id!=='z') throw new Error('veh'); });
+    el.testout.textContent = out.join('\n');
+  });
+
+  // Auto-start + geoloc
+  window.addEventListener('load', function(){
+    setTimeout(function(){ if(!el.btnStart.disabled){ el.btnStart.click(); } }, 600);
+    enableMyLocation();
+  });
+})();
+</script>
+</body>
+</html>
